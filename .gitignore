@@ -1,0 +1,12 @@
+# C++
+*.o
+*.obj
+*.exe
+*.out
+build/
+cmake-build-*/
+.vscode/
+.idea/
+*.swp
+*.DS_Store
+*.log
