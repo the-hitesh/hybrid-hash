@@ -1,59 +1,48 @@
 #include "HybridHash.h"
+#include <algorithm>
+#include <iostream>
+
+
+template<typename K, typename V>
+HybridHash<K,V>::HybridHash(size_t initial_capacity)
+: capacity_(1ULL << (64 - __builtin_clzll(std::max<size_t>(1, initial_capacity-1))))
+, cuckoo_(capacity_, 500)
+, hopscotch_(capacity_, 32)
+, robinhood_(capacity_)
+, stash_(std::max<size_t>(64, capacity_/64))
+{
+cuckoo_table_.resize(capacity_);
+hop_table_.resize(capacity_);
+robin_table_.resize(capacity_);
+}
+
+
+template<typename K, typename V>
+void HybridHash<K,V>::rehash(size_t new_capacity) {
+std::unique_lock lock(mu_);
+new_capacity = 1ULL << (64 - __builtin_clzll(std::max<size_t>(1, new_capacity-1)));
+// rehash each component's table
+cuckoo_.rehash(cuckoo_table_, new_capacity);
+hopscotch_.rehash(hop_table_, new_capacity);
+robinhood_.rehash(robin_table_, new_capacity);
+// stash remains; we will try to drain it into new table later
+capacity_ = new_capacity;
+}
+
+
+// Insert strategy: choose based on load factor
+template<typename K, typename V>
+bool HybridHash<K,V>::insert(const K& key, const V& value) {
+std::unique_lock lock(mu_);
+double lf = load_factor();
+bool ok = false;
+if (lf < 0.5) {
+ok = robinhood_.insert(key, value, robin_table_);
+if (ok) { size_.fetch_add(1); return true; }
+}
+if (lf < 0.8) {
+ok = hopscotch_.insert(key, value, hop_table_);
 if (ok) { size_.fetch_add(1); return true; }
 }
 // try cuckoo as fallback/high-load
-ok = cuckoo_.insert(key, value, cuckoo_table_);
-if (ok) { size_.fetch_add(1); return true; }
-
-
-// try other methods if primary failed
-ok = robinhood_.insert(key, value, robin_table_);
-if (ok) { size_.fetch_add(1); return true; }
-ok = hopscotch_.insert(key, value, hop_table_);
-if (ok) { size_.fetch_add(1); return true; }
-
-
-// stash fallback
-ok = stash_.insert(key, value);
-if (ok) { return true; }
-
-
-// rehash and retry once
-rehash(capacity_ * 2);
-// After rehash, try again (recursive but will succeed or stash)
-if (insert(key, value)) return true;
-return false;
-}
-
-
-template<typename K, typename V>
-std::optional<V> HybridHash<K,V>::lookup(const K& key) {
-std::shared_lock lock(mu_);
-auto v = robinhood_.lookup(key, robin_table_);
-if (v.has_value()) return v;
-v = hopscotch_.lookup(key, hop_table_);
-if (v.has_value()) return v;
-v = cuckoo_.lookup(key, cuckoo_table_);
-if (v.has_value()) return v;
-return stash_.lookup(key);
-}
-
-
-template<typename K, typename V>
-bool HybridHash<K,V>::remove(const K& key) {
-std::unique_lock lock(mu_);
-bool ok = false;
-ok = robinhood_.remove(key, robin_table_);
-if (ok) { size_.fetch_sub(1); return true; }
-ok = hopscotch_.remove(key, hop_table_);
-if (ok) { size_.fetch_sub(1); return true; }
-ok = cuckoo_.remove(key, cuckoo_table_);
-if (ok) { size_.fetch_sub(1); return true; }
-ok = stash_.remove(key);
-if (ok) return true;
-return false;
-}
-
-
-// Explicit template instantiation for common types if desired in translation unit
 // template class HybridHash<int,int>;
